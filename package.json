@@ -1,0 +1,19 @@
+{
+  "name": "mcp-railway-server",
+  "version": "1.0.0",
+  "description": "MCP Tools Server — web_fetch, web_search, memory_store, memory_get, file_read, file_write",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^2.7.0",
+    "cheerio": "^1.0.0-rc.12",
+    "lowdb": "1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
