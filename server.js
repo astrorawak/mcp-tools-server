@@ -233,9 +233,13 @@ function tool_file_write({ filename, content }) {
   if (!filename || !filename.trim()) return err('Filename cannot be empty');
   if (!content) return err('Content cannot be empty');
 
+  // Sanitize filename but keep dots — use bracket notation to avoid lowdb nested path issue
   const safeName = filename.trim().replace(/[^a-zA-Z0-9._\-]/g, '_').slice(0, 100);
   const now = new Date().toISOString();
-  db.set(`files.${safeName}`, { content, updated_at: now, size: content.length }).write();
+  // Use bracket notation via lodash path to avoid dots being treated as nested keys
+  const files = db.get('files').value() || {};
+  files[safeName] = { content, updated_at: now, size: content.length };
+  db.set('files', files).write();
   return ok(`File "${safeName}" written successfully (${content.length} characters).`);
 }
 
