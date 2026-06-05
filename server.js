@@ -71,7 +71,8 @@ const MCP_TOOLS = [
   },
   {
     name: 'file_write',
-    description: 'Write text content to a named file for persistent storage. Files are stored on the server and can be read back later.',
+    description: 'Write text content to a named file for persistent storage. Returns a public download URL so the user can access the file directly.',
+
     inputSchema: {
       type: 'object',
       properties: {
@@ -229,18 +230,18 @@ function tool_memory_get({ key, list_all }) {
   return ok(`## Memory: "${safeKey}"\n_Last updated: ${entry.updated_at}_\n\n${entry.value}`);
 }
 
-function tool_file_write({ filename, content }) {
+function tool_file_write({ filename, content }, baseUrl) {
   if (!filename || !filename.trim()) return err('Filename cannot be empty');
   if (!content) return err('Content cannot be empty');
 
-  // Sanitize filename but keep dots — use bracket notation to avoid lowdb nested path issue
   const safeName = filename.trim().replace(/[^a-zA-Z0-9._\-]/g, '_').slice(0, 100);
   const now = new Date().toISOString();
-  // Use bracket notation via lodash path to avoid dots being treated as nested keys
   const files = db.get('files').value() || {};
   files[safeName] = { content, updated_at: now, size: content.length };
   db.set('files', files).write();
-  return ok(`File "${safeName}" written successfully (${content.length} characters).`);
+
+  const downloadUrl = `${baseUrl}/files/${encodeURIComponent(safeName)}`;
+  return ok(`File "${safeName}" saved successfully (${content.length} characters).\n\n**Download link:** ${downloadUrl}\n\nYou can click the link above to view or download the file directly.`);
 }
 
 function tool_file_read({ filename, list_files }) {
@@ -266,7 +267,7 @@ function tool_file_read({ filename, list_files }) {
 function ok(text) { return { content: [{ type: 'text', text }] }; }
 function err(msg) { return { isError: true, content: [{ type: 'text', text: `Error: ${msg}` }] }; }
 
-async function callTool(name, args) {
+async function callTool(name, args, baseUrl) {
   const start = Date.now();
   try {
     switch (name) {
@@ -274,7 +275,7 @@ async function callTool(name, args) {
       case 'web_search':  return await tool_web_search(args);
       case 'memory_store': return tool_memory_store(args);
       case 'memory_get':  return tool_memory_get(args);
-      case 'file_write':  return tool_file_write(args);
+      case 'file_write':  return tool_file_write(args, baseUrl);
       case 'file_read':   return tool_file_read(args);
       default: return err(`Unknown tool: ${name}. Available: ${MCP_TOOLS.map(t => t.name).join(', ')}`);
     }
@@ -321,7 +322,10 @@ app.post('/mcp', async (req, res) => {
         return res.json(rpcOk(id, { tools: MCP_TOOLS }));
 
       case 'tools/call': {
-        const result = await callTool(params?.name, params?.arguments || {});
+        const proto = req.headers['x-forwarded-proto'] || 'https';
+        const host  = req.headers['x-forwarded-host'] || req.headers.host;
+        const baseUrl = `${proto}://${host}`;
+        const result = await callTool(params?.name, params?.arguments || {}, baseUrl);
         return res.json(rpcOk(id, result));
       }
 
@@ -370,6 +374,49 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+
+// ─── File Download Endpoint ───────────────────────────────────────────────────
+app.get('/files/:filename', (req, res) => {
+  const safeName = decodeURIComponent(req.params.filename)
+    .replace(/[^a-zA-Z0-9._\-]/g, '_').slice(0, 100);
+  const files = db.get('files').value() || {};
+  const entry = files[safeName];
+  if (!entry) {
+    return res.status(404).json({ error: `File "${safeName}" not found` });
+  }
+
+  // Detect content type from extension
+  const ext = safeName.split('.').pop()?.toLowerCase();
+  const contentTypes = {
+    'md': 'text/markdown; charset=utf-8',
+    'txt': 'text/plain; charset=utf-8',
+    'json': 'application/json; charset=utf-8',
+    'html': 'text/html; charset=utf-8',
+    'csv': 'text/csv; charset=utf-8',
+    'js': 'application/javascript; charset=utf-8',
+    'py': 'text/plain; charset=utf-8',
+  };
+  const contentType = contentTypes[ext] || 'text/plain; charset=utf-8';
+
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+  res.send(entry.content);
+});
+
+// ─── List Files Endpoint ──────────────────────────────────────────────────────
+app.get('/files', (req, res) => {
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  const host  = req.headers['x-forwarded-host'] || req.headers.host;
+  const baseUrl = `${proto}://${host}`;
+  const files = db.get('files').value() || {};
+  const list = Object.entries(files).map(([name, f]) => ({
+    filename: name,
+    size: f.size,
+    updated_at: f.updated_at,
+    download_url: `${baseUrl}/files/${encodeURIComponent(name)}`
+  }));
+  res.json({ files: list, total: list.length });
+});
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
