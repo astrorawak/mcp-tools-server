@@ -154,41 +154,14 @@ async function tool_web_search({ query, max_results = 5 }) {
   if (!query || !query.trim()) return err('Search query cannot be empty');
   const limit = Math.min(Number(max_results) || 5, 10);
 
-  const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const res = await fetch(searchUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'text/html'
-    },
-    timeout: 15000
-  });
+  // Try multiple search engines for reliability
+  const results = await searchWithSearXNG(query, limit)
+    || await searchWithGoogle(query, limit)
+    || await searchWithBing(query, limit);
 
-  if (!res.ok) return err(`Search failed: HTTP ${res.status}`);
-
-  const html = await res.text();
-  const $ = cheerio.load(html);
-  const results = [];
-
-  $('.result').slice(0, limit).each((_, el) => {
-    const titleEl = $(el).find('.result__a');
-    const snippetEl = $(el).find('.result__snippet');
-    const urlEl = $(el).find('.result__url');
-
-    const title = titleEl.text().trim();
-    const snippet = snippetEl.text().trim();
-    const href = titleEl.attr('href') || '';
-
-    // DuckDuckGo wraps URLs
-    let cleanUrl = href;
-    try {
-      const u = new URL(href, 'https://duckduckgo.com');
-      cleanUrl = u.searchParams.get('uddg') || u.searchParams.get('u') || href;
-    } catch {}
-
-    if (title) results.push({ title, url: cleanUrl, snippet });
-  });
-
-  if (!results.length) return ok(`No results found for: "${query}"`);
+  if (!results || !results.length) {
+    return ok(`No results found for: "${query}". Try using web_fetch with a specific URL instead.`);
+  }
 
   let output = `## Search Results for: "${query}"\n\n`;
   results.forEach((r, i) => {
@@ -199,6 +172,83 @@ async function tool_web_search({ query, max_results = 5 }) {
   });
 
   return ok(output);
+}
+
+async function searchWithSearXNG(query, limit) {
+  try {
+    const url = `https://searx.be/search?q=${encodeURIComponent(query)}&format=json&categories=general`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MCPBot/1.0)', 'Accept': 'application/json' },
+      timeout: 10000
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.results || !data.results.length) return null;
+    return data.results.slice(0, limit).map(r => ({
+      title: r.title || '',
+      url: r.url || '',
+      snippet: r.content || ''
+    }));
+  } catch { return null; }
+}
+
+async function searchWithGoogle(query, limit) {
+  try {
+    const url = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=${limit}&hl=id`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'id-ID,id;q=0.9,en;q=0.8'
+      },
+      timeout: 12000
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    const results = [];
+    // Google mobile results
+    $('div[data-hveid] a[href^="/url"], div.g a[href^="http"]').each((_, el) => {
+      if (results.length >= limit) return false;
+      const href = $(el).attr('href') || '';
+      let cleanUrl = href;
+      if (href.startsWith('/url?')) {
+        try { cleanUrl = new URL('https://google.com' + href).searchParams.get('q') || href; } catch {}
+      }
+      if (!cleanUrl.startsWith('http')) return;
+      const title = $(el).text().trim();
+      if (title && cleanUrl && !results.find(r => r.url === cleanUrl)) {
+        results.push({ title, url: cleanUrl, snippet: '' });
+      }
+    });
+    return results.length ? results : null;
+  } catch { return null; }
+}
+
+async function searchWithBing(query, limit) {
+  try {
+    const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=${limit}`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html'
+      },
+      timeout: 12000
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    const results = [];
+    $('li.b_algo').slice(0, limit).each((_, el) => {
+      const titleEl = $(el).find('h2 a');
+      const snippetEl = $(el).find('.b_caption p, .b_algoSlug');
+      const title = titleEl.text().trim();
+      const href = titleEl.attr('href') || '';
+      const snippet = snippetEl.first().text().trim();
+      if (title && href.startsWith('http')) results.push({ title, url: href, snippet });
+    });
+    return results.length ? results : null;
+  } catch { return null; }
 }
 
 function tool_memory_store({ key, value }) {
